@@ -9,7 +9,6 @@ class Sequence:
         self.last_token = token_ids[-1]
         self.num_prompt_tokens = len(token_ids)
         self.num_tokens = len(token_ids)
-        self.num_cached_tokens = 0
 
         self.is_finished = False
         self.temperature = sampling_params.temperature

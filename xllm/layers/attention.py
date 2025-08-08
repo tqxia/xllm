@@ -10,31 +10,28 @@ class AttentionWithoutKVCache(nn.Module):
         head_dim,
         scale,
         num_kv_heads,
+        max_seq_len,
     ):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = scale
         self.num_kv_heads = num_kv_heads
+        self.num_queries_per_kv = num_heads // num_kv_heads
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
+        q_len = q.size(0)
+        kv_len = k.size(0)
 
-        q = q.unsqueeze(0).transpose(1, 2)
-        k = k.unsqueeze(0).transpose(1, 2)
-        v = v.unsqueeze(0).transpose(1, 2)
-        # print(f"q.shape: {q.shape}, k.shape: {k.shape}, v.shape: {v.shape}")
+        q = q.view(1, q_len, self.num_heads, self.head_dim)
+        k = k.view(1, kv_len, self.num_kv_heads, self.head_dim)
+        v = v.view(1, kv_len, self.num_kv_heads, self.head_dim)
 
+        q, k, v = (x.transpose(1, 2) for x in (q, k, v))
         o = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=self.scale, enable_gqa=True)
-        # print(f"o.shape: {o.shape}")
 
         o = o.transpose(1, 2).squeeze(0)
-        # after tranposing, the underlying tensor is not contiguous in memory, call contiguous() to get a contiguous copy
-        o = o.contiguous().view(-1, self.num_heads * self.head_dim)
-        # print(f"o.shape: {o.shape}")
-        return o
+        return o.reshape(q_len, -1)
 
 
 class Attention(nn.Module):
@@ -45,36 +42,46 @@ class Attention(nn.Module):
         head_dim,
         scale,
         num_kv_heads,
+        max_seq_len,
     ):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim
         self.scale = scale
         self.num_kv_heads = num_kv_heads
-        self.k_cache = self.v_cache = None
+        self.max_seq_len = max_seq_len
+        self.num_queries_per_kv = num_heads // num_kv_heads
+
+        self.k_cache = torch.zeros(1, max_seq_len, num_kv_heads, head_dim, dtype=torch.bfloat16).cuda()
+        self.v_cache = torch.zeros(1, max_seq_len, num_kv_heads, head_dim, dtype=torch.bfloat16).cuda()
+        self.cur_pos = 0
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
-        # print(f"q.shape: {q.shape}, k.shape: {k.shape}, v.shape: {v.shape}")
-        q = q.view(-1, self.num_heads, self.head_dim)
-        k = k.view(-1, self.num_kv_heads, self.head_dim)
-        v = v.view(-1, self.num_kv_heads, self.head_dim)
-        # add a fake batch dimension
-        # (seq_len, num_heads, head_dim) -> (batch_size, num_heads, seq_len, head_dim)
-        q = q.unsqueeze(0).transpose(1, 2)
-        k = k.unsqueeze(0).transpose(1, 2)
-        v = v.unsqueeze(0).transpose(1, 2)
-        # print(f"q.shape: {q.shape}, k.shape: {k.shape}, v.shape: {v.shape}")
+        q_len = q.size(0)
+        kv_len = k.size(0)
 
-        if self.k_cache is not None and self.v_cache is not None:
-            k = torch.cat((self.k_cache, k), dim=2)
-            v = torch.cat((self.v_cache, v), dim=2)
-        self.k_cache, self.v_cache = k, v
+        q = q.view(1, q_len, self.num_heads, self.head_dim)
+        k = k.view(1, kv_len, self.num_kv_heads, self.head_dim)
+        v = v.view(1, kv_len, self.num_kv_heads, self.head_dim)
 
-        o = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=self.scale, enable_gqa=True)
-        # print(f"o.shape: {o.shape}")
+        self.k_cache[:, self.cur_pos:self.cur_pos+kv_len, :, :] = k
+        self.v_cache[:, self.cur_pos:self.cur_pos+kv_len, :, :] = v
+        self.cur_pos += kv_len
+
+        k = self.k_cache[:, :self.cur_pos, :, :]
+        v = self.v_cache[:, :self.cur_pos, :, :]
+
+        k = torch.repeat_interleave(k, self.num_queries_per_kv, dim=2)
+        v = torch.repeat_interleave(v, self.num_queries_per_kv, dim=2)
+
+        # F.scaled_dot_product_attention seems to be not working properly for decoding,
+        # so here we opt for a manual implementation.
+        attn_scores = torch.einsum('bqhd,bkhd->bhqk', q, k) / (self.head_dim ** 0.5)
+        mask = torch.ones(1, q_len, kv_len, dtype=torch.bool, device=q.device).tril(diagonal=0)
+        attn_scores = attn_scores.masked_fill(mask.unsqueeze(1) == 0, float('-inf'))
+        attn_probs = F.softmax(attn_scores, dim=-1)
+        o = torch.einsum('bhqk,bkhd->bhqd', attn_probs, v)
 
         o = o.transpose(1, 2).squeeze(0)
-        # after tranposing, the underlying tensor is not contiguous in memory, call contiguous() to get a contiguous copy
-        o = o.contiguous().view(-1, self.num_heads * self.head_dim)
-        # print(f"o.shape: {o.shape}")
+        o = o.reshape(q_len, -1)
         return o

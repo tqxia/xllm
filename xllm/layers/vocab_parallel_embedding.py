@@ -42,9 +42,7 @@ class LMHead(VocabEmbedding):
             self.register_parameter("bias", None)
 
     def forward(self, x: torch.Tensor):
-        # print(f"x before: {x}")
         # if x.shape[0] != 1:
         #     x = x[-1:]
-        # print(f"x after: {x}")
         logits = F.linear(x, self.weight, self.bias)
         return logits

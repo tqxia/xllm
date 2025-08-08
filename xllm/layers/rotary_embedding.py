@@ -51,10 +51,10 @@ class RotaryEmbedding(nn.Module):
         cos_sin = self.cos_sin_cache[positions]
         cos, sin = cos_sin.chunk(2, dim=-1)
         query_shape = query.shape
-        query = query.view(num_tokens, -1, self.head_size)
+        query = query.view(len(positions), -1, self.head_size)
         query = apply_rotary_emb(query, cos, sin).view(query_shape)
         key_shape = key.shape
-        key = key.view(num_tokens, -1, self.head_size)
+        key = key.view(len(positions), -1, self.head_size)
         key = apply_rotary_emb(key, cos, sin).view(key_shape)
         return query, key
 

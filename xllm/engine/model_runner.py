@@ -31,15 +31,15 @@ class ModelRunner:
 
     def prepare_prefill(self, seq: Sequence):
         seqlen = len(seq)
-        input_ids = seq[seq.num_cached_tokens:]
-        positions = list(range(seq.num_cached_tokens, seqlen))
+        input_ids = seq[:]
+        positions = list(range(0, seqlen))
         input_ids_tensor = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions_tensor = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         return input_ids_tensor, positions_tensor
 
     def prepare_decode(self, seq: Sequence):
         input_ids = [seq.last_token]
-        positions = [len(seq)]
+        positions = [len(seq)-1]
         input_ids_tensor = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions_tensor = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         return input_ids_tensor, positions_tensor
@@ -49,11 +49,9 @@ class ModelRunner:
         return temperatures
 
     def run(self, seq: Sequence, is_prefill: bool) -> int:
-        # input_ids, positions = self.prepare_prefill(seq) if is_prefill else self.prepare_decode(seq)
-        input_ids, positions = self.prepare(seq)
-        print(f"input_ids: {input_ids}, positions: {positions}, input_ids.shape: {input_ids.shape}, positions.shape: {positions.shape}, is_prefill: {is_prefill}")
+        input_ids, positions = self.prepare_prefill(seq) if is_prefill else self.prepare_decode(seq)
+        # input_ids, positions = self.prepare(seq)
         temperatures = self.prepare_temperature(seq)
         logits = self.model.compute_logits(self.model(input_ids, positions))
         token_ids = self.sampler(logits, temperatures).tolist()
-        print(f"token_ids: {token_ids}")
         return token_ids[-1]

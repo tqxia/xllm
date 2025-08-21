@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from xllm.forward_context import get_forward_context
+
 
 class VocabEmbedding(nn.Module):
 
@@ -42,7 +44,10 @@ class LMHead(VocabEmbedding):
             self.register_parameter("bias", None)
 
     def forward(self, x: torch.Tensor):
-        # if x.shape[0] != 1:
-        #     x = x[-1:]
+        ctx = get_forward_context()
+        if ctx.is_prefill:
+            last_indices = [l - 1 for l in ctx.cu_seqlens[1:]]
+            # last_indices = ctx.cu_seqlens[1:] - 1
+            x = x[last_indices].contiguous()
         logits = F.linear(x, self.weight, self.bias)
         return logits

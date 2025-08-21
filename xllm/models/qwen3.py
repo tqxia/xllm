@@ -56,7 +56,7 @@ class Qwen3Attention(nn.Module):
             base=self.rope_theta,
             rope_scaling=rope_scaling,
         )
-        self.attn = Attention(
+        self.attn = AttentionWithoutKVCache(
             self.num_heads,
             self.head_dim,
             self.scaling,

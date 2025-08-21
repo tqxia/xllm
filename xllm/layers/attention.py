@@ -2,6 +2,8 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
+from xllm.forward_context import get_forward_context
+
 
 class AttentionWithoutKVCache(nn.Module):
     def __init__(
@@ -20,18 +22,28 @@ class AttentionWithoutKVCache(nn.Module):
         self.num_queries_per_kv = num_heads // num_kv_heads
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):
-        q_len = q.size(0)
-        kv_len = k.size(0)
+        ctx = get_forward_context()
+        cu_seqlens = ctx.cu_seqlens
+        orig_q, orig_k, orig_v = q, k, v
 
-        q = q.view(1, q_len, self.num_heads, self.head_dim)
-        k = k.view(1, kv_len, self.num_kv_heads, self.head_dim)
-        v = v.view(1, kv_len, self.num_kv_heads, self.head_dim)
+        res = []
+        for idx in range(len(cu_seqlens)-1):
+            q = orig_q[cu_seqlens[idx]:cu_seqlens[idx+1], :]
+            k = orig_k[cu_seqlens[idx]:cu_seqlens[idx+1], :]
+            v = orig_v[cu_seqlens[idx]:cu_seqlens[idx+1], :]
 
-        q, k, v = (x.transpose(1, 2) for x in (q, k, v))
-        o = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=self.scale, enable_gqa=True)
+            cu_seqlen = cu_seqlens[idx+1] - cu_seqlens[idx]
+            # print(f"Processing batch {idx}, cu_seqlen {cu_seqlen} total {len(cu_seqlens)-1}")
+            q = q.view(1, cu_seqlen, self.num_heads, self.head_dim)
+            k = k.view(1, cu_seqlen, self.num_kv_heads, self.head_dim)
+            v = v.view(1, cu_seqlen, self.num_kv_heads, self.head_dim)
 
-        o = o.transpose(1, 2).squeeze(0)
-        return o.reshape(q_len, -1)
+            q, k, v = (x.transpose(1, 2) for x in (q, k, v))
+            o = F.scaled_dot_product_attention(q, k, v, is_causal=True, scale=self.scale, enable_gqa=True)
+            o = o.transpose(1, 2).squeeze(0).reshape(cu_seqlen, -1)
+            res.append(o)
+        o = torch.cat(res, 0)
+        return o
 
 
 class Attention(nn.Module):
@@ -52,8 +64,8 @@ class Attention(nn.Module):
         self.max_seq_len = max_seq_len
         self.num_queries_per_kv = num_heads // num_kv_heads
 
-        self.k_cache = torch.zeros(1, max_seq_len, num_kv_heads, head_dim, dtype=torch.bfloat16).cuda()
-        self.v_cache = torch.zeros(1, max_seq_len, num_kv_heads, head_dim, dtype=torch.bfloat16).cuda()
+        self.k_cache = torch.zeros(1, max_seq_len, num_kv_heads, head_dim, dtype=torch.bfloat16).cuda(non_blocking=True)
+        self.v_cache = torch.zeros(1, max_seq_len, num_kv_heads, head_dim, dtype=torch.bfloat16).cuda(non_blocking=True)
         self.cur_pos = 0
 
     def forward(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor):

@@ -9,3 +9,5 @@ class Config:
     max_model_len: int = 4096
     hf_config: AutoConfig | None = None
     eos: int = -1
+    # Batching
+    max_num_seqs: int = 512 # Max batch size

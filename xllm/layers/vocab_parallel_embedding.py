@@ -46,6 +46,7 @@ class LMHead(VocabEmbedding):
     def forward(self, x: torch.Tensor):
         ctx = get_forward_context()
         if ctx.is_prefill:
+            # seq_lens = [4, 2, 3] -> cu_seqlens = [0,4,6,9] -> cu_seqlens[1:] = [4,6,9] -> last_indices = [3,5,8]
             last_indices = [l - 1 for l in ctx.cu_seqlens[1:]]
             # last_indices = ctx.cu_seqlens[1:] - 1
             x = x[last_indices].contiguous()

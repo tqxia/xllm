@@ -2,6 +2,7 @@ import torch
 from torch import nn
 from transformers import Qwen3Config
 
+from xllm.config import Config
 from xllm.layers.activation import SiluAndMul
 from xllm.layers.attention import AttentionWithoutKVCache, Attention
 from xllm.layers.layernorm import RMSNorm
@@ -18,6 +19,7 @@ class Qwen3Attention(nn.Module):
         num_heads: int,
         num_kv_heads: int,
         max_position: int = 4096 * 32,
+        max_num_seqs: int = 512,
         head_dim: int | None = None,
         rms_norm_eps: float = 1e-06,
         qkv_bias: bool = False,
@@ -56,12 +58,13 @@ class Qwen3Attention(nn.Module):
             base=self.rope_theta,
             rope_scaling=rope_scaling,
         )
-        self.attn = AttentionWithoutKVCache(
+        self.attn = Attention(
             self.num_heads,
             self.head_dim,
             self.scaling,
             num_kv_heads=self.num_kv_heads,
             max_seq_len=max_position,
+            max_num_seqs=max_num_seqs,
         )
         self.q_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
         self.k_norm = RMSNorm(self.head_dim, eps=rms_norm_eps)
@@ -112,27 +115,28 @@ class Qwen3MLP(nn.Module):
 
 class Qwen3DecoderLayer(nn.Module):
 
-    def __init__(self, config: Qwen3Config):
+    def __init__(self, config: Config):
         super().__init__()
-        self.hidden_size = config.hidden_size
+        hf_config: Qwen3Config = config.hf_config 
         self.self_attn = Qwen3Attention(
-            hidden_size=self.hidden_size,
-            num_heads=config.num_attention_heads,
-            num_kv_heads=config.num_key_value_heads,
-            max_position=config.max_position_embeddings,
-            rms_norm_eps=config.rms_norm_eps,
-            qkv_bias=getattr(config, 'attention_bias', False),
-            head_dim=getattr(config, 'head_dim', None),
-            rope_theta=getattr(config, "rope_theta", 1000000),
-            rope_scaling=getattr(config, "rope_scaling", None),
+            hidden_size=hf_config.hidden_size,
+            num_heads=hf_config.num_attention_heads,
+            num_kv_heads=hf_config.num_key_value_heads,
+            max_position=hf_config.max_position_embeddings,
+            max_num_seqs=config.max_num_seqs,
+            rms_norm_eps=hf_config.rms_norm_eps,
+            qkv_bias=getattr(hf_config, 'attention_bias', False),
+            head_dim=getattr(hf_config, 'head_dim', None),
+            rope_theta=getattr(hf_config, "rope_theta", 1000000),
+            rope_scaling=getattr(hf_config, "rope_scaling", None),
         )
         self.mlp = Qwen3MLP(
-            hidden_size=config.hidden_size,
-            intermediate_size=config.intermediate_size,
-            hidden_act=config.hidden_act,
+            hidden_size=hf_config.hidden_size,
+            intermediate_size=hf_config.intermediate_size,
+            hidden_act=hf_config.hidden_act,
         )
-        self.input_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.input_layernorm = RMSNorm(hf_config.hidden_size, eps=hf_config.rms_norm_eps)
+        self.post_attention_layernorm = RMSNorm(hf_config.hidden_size, eps=hf_config.rms_norm_eps)
 
     def forward(
         self,
@@ -154,12 +158,12 @@ class Qwen3DecoderLayer(nn.Module):
 
 class Qwen3Model(nn.Module):
 
-    def __init__(self, config: Qwen3Config):
+    def __init__(self, config: Config):
         super().__init__()
-        self.vocab_size = config.vocab_size
-        self.embed_tokens = VocabEmbedding(config.vocab_size, config.hidden_size)
-        self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(config.num_hidden_layers)])
-        self.norm = RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        hf_config: Qwen3Config = config.hf_config
+        self.embed_tokens = VocabEmbedding(hf_config.vocab_size, hf_config.hidden_size)
+        self.layers = nn.ModuleList([Qwen3DecoderLayer(config) for _ in range(hf_config.num_hidden_layers)])
+        self.norm = RMSNorm(hf_config.hidden_size, eps=hf_config.rms_norm_eps)
 
     def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
@@ -179,11 +183,13 @@ class Qwen3ForCausalLM(nn.Module):
         "up_proj": ("gate_up_proj", 1),
     }
 
-    def __init__(self, config: Qwen3Config):
+    def __init__(self, config: Config):
         super().__init__()
         self.model = Qwen3Model(config)
-        self.lm_head = LMHead(config.vocab_size, config.hidden_size)
-        if config.tie_word_embeddings:
+
+        hf_config: Qwen3Config = config.hf_config
+        self.lm_head = LMHead(hf_config.vocab_size, hf_config.hidden_size)
+        if hf_config.tie_word_embeddings:
             self.lm_head.weight.data = self.model.embed_tokens.weight.data
     
     def forward(self, input_ids: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:

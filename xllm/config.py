@@ -10,4 +10,4 @@ class Config:
     hf_config: AutoConfig | None = None
     eos: int = -1
     # Batching
-    max_num_seqs: int = 512 # Max batch size
+    max_num_seqs: int = 16 # Max batch size

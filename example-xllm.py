@@ -12,6 +12,7 @@ def single_prompt_inference(llm: LLM, tokenizer: AutoTokenizer, sampling_params:
         "introduce yourself",
         "tell me a joke",
         "give me a list of 10 things to do today",
+        "what is the capatical of China?"
     ]
     prompts = [
         tokenizer.apply_chat_template(
@@ -31,7 +32,7 @@ def main():
     path = os.path.expanduser("~/huggingface/Qwen3-0.6B/")
     tokenizer = AutoTokenizer.from_pretrained(path)
     llm = LLM(path)
-    sampling_params = SamplingParams(temperature=0.6, max_tokens=20)
+    sampling_params = SamplingParams(temperature=0.6, max_tokens=100)
     single_prompt_inference(llm, tokenizer, sampling_params)
 
 
